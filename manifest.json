@@ -1,0 +1,116 @@
+{
+  "suite": "agent-action-receipts conformance vectors",
+  "draft": "draft-sahu-agent-action-receipts-00",
+  "test_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "test_public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "vectors": [
+    {
+      "file": "01-basic-chain.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null
+      },
+      "note": "three receipts, genesis has no prev_hash"
+    },
+    {
+      "file": "02-optional-actor.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null
+      },
+      "note": "actor absent on genesis: omission is total (no member, no separator)"
+    },
+    {
+      "file": "03-extension-members.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null
+      },
+      "note": "unknown members (source, vendor_ext) are ignored by the signature but covered by the chain"
+    },
+    {
+      "file": "04-params-shapes.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null
+      },
+      "note": "nested objects sort recursively; arrays keep order; RFC 8259 minimal string escaping; integers only"
+    },
+    {
+      "file": "10-tampered-value.jsonl",
+      "expect": {
+        "sig_failures": [
+          1
+        ],
+        "chain_break": 2
+      },
+      "note": "one signed value edited: its signature fails AND the next link breaks"
+    },
+    {
+      "file": "11-reordered.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 2
+      },
+      "note": "every signature valid; ordering violation surfaces only in the chain"
+    },
+    {
+      "file": "12-interior-deleted.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 2
+      },
+      "note": "middle record removed"
+    },
+    {
+      "file": "13-duplicated-line.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 3
+      },
+      "note": "a line replayed twice"
+    },
+    {
+      "file": "14-head-truncated.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null
+      },
+      "note": "HONEST LIMIT: last record dropped, everything verifies clean; only an external head assertion detects this (draft Security Considerations)"
+    },
+    {
+      "file": "15-genesis-with-prevhash.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 1
+      },
+      "note": "validly signed, but the first record must not carry prev_hash"
+    },
+    {
+      "file": "16-missing-prevhash.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 2
+      },
+      "note": "validly signed, but a non-genesis record must carry prev_hash"
+    },
+    {
+      "file": "17-bad-key-encoding.jsonl",
+      "expect": {
+        "sig_failures": [
+          1
+        ],
+        "chain_break": null
+      },
+      "note": "public_key not exactly 64 lowercase hex chars must be rejected"
+    },
+    {
+      "file": "18-tampered-extension.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": 2
+      },
+      "note": "THE DIFFERENTIATOR: an unsigned extension member is edited — every signature still passes, but the chain (over raw transmitted octets) breaks"
+    }
+  ]
+}
