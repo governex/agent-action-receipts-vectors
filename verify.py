@@ -8,6 +8,7 @@ implementation and must verify under this one. Requires: pip install cryptograph
 Usage:
   verify.py <log.jsonl>        verify one receipt log (exit 0 = all good)
   verify.py --manifest [dir]   run every vector against manifest.json expectations
+  verify.py --head <assertion.json> <log.jsonl>   check a signed head assertion
 """
 import hashlib
 import json
@@ -17,6 +18,8 @@ from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+HEAD_TAG = "agent-receipt-head-v1:"
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX128 = re.compile(r"^[0-9a-f]{128}$")
@@ -58,6 +61,8 @@ def canonical_bytes(r):
         '"success":' + ("true" if r["success"] else "false"),
         '"ts_ms":' + str(r["ts_ms"]),
     ]
+    if "seq" in r and r["seq"] is not None:
+        parts.append('"seq":' + str(r["seq"]))
     if "actor" in r and r["actor"] is not None:
         a = r["actor"]
         parts.append(
@@ -82,6 +87,9 @@ def verify_receipt(r):
             return "success must be a boolean"
         if not isinstance(r.get("ts_ms"), int) or isinstance(r.get("ts_ms"), bool) or r["ts_ms"] < 0:
             return "ts_ms must be a non-negative integer"
+        if "seq" in r and r["seq"] is not None:
+            if not isinstance(r["seq"], int) or isinstance(r["seq"], bool) or r["seq"] < 0:
+                return "seq must be a non-negative integer"
         if "actor" in r and r["actor"] is not None:
             a = r["actor"]
             if not isinstance(a, dict) or not isinstance(a.get("agent"), str) or not isinstance(a.get("user"), str):
@@ -121,6 +129,84 @@ def chain_break(raw_lines):
     return None
 
 
+def log_flags(raw_lines):
+    """Repetition and ordering checks that hold even when the chain is intact
+    (draft -01): a repeated step_id, and - when the optional signed seq profile
+    is in use - a gap or repeat in the per-chain sequence numbers.
+    Returns (step_id_repeat, seq_gap, seq_repeat): 1-based line of the first
+    offence for each, or None."""
+    step_id_repeat = seq_gap = seq_repeat = None
+    seen = {}
+    seqs = []
+    for i, line in enumerate(raw_lines):
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            seqs.append(None)
+            continue
+        sid = r.get("step_id")
+        if isinstance(sid, str):
+            if sid in seen and step_id_repeat is None:
+                step_id_repeat = i + 1
+            seen.setdefault(sid, i + 1)
+        v = r.get("seq")
+        seqs.append(v if isinstance(v, int) and not isinstance(v, bool) else None)
+    if any(v is not None for v in seqs):  # profile in use
+        prev = None
+        for i, v in enumerate(seqs):
+            if v is None:  # numbering interrupted mid-profile
+                if seq_gap is None:
+                    seq_gap = i + 1
+                prev = None
+                continue
+            if i == 0 or prev is None:
+                if i == 0 and v != 0 and seq_gap is None:
+                    seq_gap = 1  # first receipt of a log carries seq 0
+            elif v <= prev:
+                if seq_repeat is None:
+                    seq_repeat = i + 1
+            elif v != prev + 1:
+                if seq_gap is None:
+                    seq_gap = i + 1
+            prev = v
+    return step_id_repeat, seq_gap, seq_repeat
+
+
+def head_canonical_bytes(h):
+    payload = ('{"chain_id":' + json.dumps(h["chain_id"])
+               + ',"count":' + str(h["count"])
+               + ',"head_hash":' + json.dumps(h["head_hash"])
+               + ',"asserted_ts_ms":' + str(h["asserted_ts_ms"]) + "}")
+    return (HEAD_TAG + payload).encode("utf-8")
+
+
+def check_head(assertion_path, log_path):
+    """Returns 'match', 'mismatch', or 'invalid' (bad signature or malformed).
+    The domain-separation tag means these bytes can never be confused with a
+    receipt signature under the same key."""
+    try:
+        h = json.loads(Path(assertion_path).read_text(encoding="utf-8"))
+        if not (isinstance(h.get("chain_id"), str) and HEX64.match(h["chain_id"])
+                and isinstance(h.get("count"), int) and not isinstance(h.get("count"), bool)
+                and h["count"] > 0
+                and isinstance(h.get("head_hash"), str) and HEX64.match(h["head_hash"])
+                and isinstance(h.get("asserted_ts_ms"), int) and h["asserted_ts_ms"] >= 0
+                and isinstance(h.get("public_key"), str) and HEX64.match(h["public_key"])
+                and isinstance(h.get("signature"), str) and HEX128.match(h["signature"])):
+            return "invalid"
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(h["public_key"])).verify(
+            bytes.fromhex(h["signature"]), head_canonical_bytes(h))
+    except (InvalidSignature, ValueError, KeyError, TypeError, OSError):
+        return "invalid"
+    raw = [l for l in Path(log_path).read_text(encoding="utf-8").split("\n") if l.strip()]
+    if not raw:
+        return "mismatch"
+    ok = (h["chain_id"] == hashlib.sha256(raw[0].encode("utf-8")).hexdigest()
+          and h["count"] == len(raw)
+          and h["head_hash"] == hashlib.sha256(raw[-1].encode("utf-8")).hexdigest())
+    return "match" if ok else "mismatch"
+
+
 def verify_log(path):
     raw = [l for l in Path(path).read_text(encoding="utf-8").split("\n") if l.strip()]
     sig_failures = []
@@ -131,7 +217,7 @@ def verify_log(path):
             reason = f"JSON parse error: {e}"
         if reason is not None:
             sig_failures.append((i + 1, reason))
-    return sig_failures, chain_break(raw), len(raw)
+    return sig_failures, chain_break(raw), log_flags(raw), len(raw)
 
 
 def main():
@@ -140,25 +226,44 @@ def main():
         manifest = json.loads((root / "manifest.json").read_text())
         disagreements = 0
         for v in manifest["vectors"]:
-            fails, cb, _ = verify_log(root / "vectors" / v["file"])
-            got = {"sig_failures": [n for n, _ in fails], "chain_break": cb}
+            fails, cb, (sid_rep, sgap, srep), _ = verify_log(root / "vectors" / v["file"])
+            got = {"sig_failures": [n for n, _ in fails], "chain_break": cb,
+                   "step_id_repeat": sid_rep, "seq_gap": sgap, "seq_repeat": srep}
             want = v["expect"]
-            ok = got == want
+            defaults = {"sig_failures": [], "chain_break": None,
+                        "step_id_repeat": None, "seq_gap": None, "seq_repeat": None}
+            ok = all(got[k] == want.get(k, defaults[k]) for k in defaults)
             disagreements += 0 if ok else 1
-            print(f"{'AGREE ' if ok else 'DISAGREE'} {v['file']}: {json.dumps(got)}"
+            shown = {k: got[k] for k in got if got[k] not in ([], None)}
+            print(f"{'AGREE ' if ok else 'DISAGREE'} {v['file']}: {json.dumps(shown)}"
                   + ("" if ok else f" expected {json.dumps(want)}"))
-        print(f"\n{len(manifest['vectors'])} vectors, {disagreements} disagreement(s)")
+        for hv in manifest.get("head_vectors", []):
+            got_h = check_head(root / "vectors" / hv["file"], root / "vectors" / hv["log"])
+            ok = got_h == hv["expect"]
+            disagreements += 0 if ok else 1
+            print(f"{'AGREE ' if ok else 'DISAGREE'} {hv['file']} vs {hv['log']}: {got_h}"
+                  + ("" if ok else f" expected {hv['expect']}"))
+        total = len(manifest["vectors"]) + len(manifest.get("head_vectors", []))
+        print(f"\n{total} checks, {disagreements} disagreement(s)")
         sys.exit(1 if disagreements else 0)
+
+    if len(sys.argv) == 4 and sys.argv[1] == "--head":
+        verdict = check_head(sys.argv[2], sys.argv[3])
+        print(f"head assertion vs log: {verdict.upper()}")
+        sys.exit(0 if verdict == "match" else 1)
 
     if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(2)
-    fails, cb, n = verify_log(sys.argv[1])
+    fails, cb, (sid_rep, sgap, srep), n = verify_log(sys.argv[1])
     for line_no, reason in fails:
         print(f"line {line_no}: SIGNATURE FAIL — {reason}")
+    for label, line_no in (("repeated step_id", sid_rep), ("seq gap", sgap), ("seq repeat", srep)):
+        if line_no is not None:
+            print(f"line {line_no}: {label}")
     print(f"{n} lines; signatures: {n - len(fails)} ok, {len(fails)} failed; "
           + (f"chain BREAK at line {cb}" if cb else "chain intact"))
-    sys.exit(1 if (fails or cb) else 0)
+    sys.exit(1 if (fails or cb or sid_rep or sgap or srep) else 0)
 
 
 if __name__ == "__main__":

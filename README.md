@@ -17,6 +17,28 @@ That cross-check is the point of the suite: a third implementation that agrees
 with the manifest has evidence it implements the draft, not a port of someone
 else's bugs.
 
+### Independent verification by a second organisation
+
+Aleksei Safonov (Independent Researcher; maintainer of
+[T-Trace/OpenPoC](https://github.com/safal207/T-Trace)) verified the original
+13-vector suite against his own from-scratch verifier: **13/13 agree, 0
+disagree, 0 unsupported**, against this repository's pinned manifest commit
+[`65836f4`](https://github.com/governex/agent-action-receipts-vectors/commit/65836f4e1ecb96ff22e8b4ab6a7c086532ce564c).
+His CI checks out only the pinned manifest and vector data and never imports or
+executes `verify.py` — same inputs, no shared code path. His result, in his own
+words, is interoperability evidence only: it does not prove the draft correct,
+does not prove capture completeness, and does not imply endorsement in either
+direction.
+
+- [Compatibility report](https://github.com/safal207/T-Trace/blob/main/docs/governex-action-receipts-compatibility.md)
+- [Verifier source](https://github.com/safal207/T-Trace/blob/main/openpoc/action_receipt_compat.py)
+- [Pinned interop CI workflow](https://github.com/safal207/T-Trace/actions/workflows/governex-action-receipts.yml)
+- [Review PR](https://github.com/safal207/T-Trace/pull/18)
+
+Vectors `19`–`21` and the head assertion below were added after that
+verification (for the -01 revision) and are **not** covered by it. Vectors
+`01`–`18` are byte-for-byte unchanged.
+
 ## Run it
 
 ```
@@ -47,6 +69,29 @@ python3 verify.py vectors/01-basic-chain.jsonl
   chain link is the SHA-256 of the previous line's *raw transmitted octets*,
   covering members the signature does not. Constructions that hash a
   re-canonicalization of the record do not catch this case.
+- `19-replayed-step-id` — **repetition with an intact chain** (added for -01).
+  The recorder re-emitted an already-recorded action as a new, validly signed,
+  validly linked position. Signatures pass, the chain is intact; only the
+  repeated `step_id` gives it away. `step_id` uniqueness is REQUIRED by the
+  draft, and from -01 a verifier must report the repeat at the later line. A
+  verifier that checks signatures and linkage but not `step_id` uniqueness
+  reports this vector clean — and is wrong.
+- `20-seq-gap` / `21-seq-repeat` — **ordering under the -01 `seq` profile.**
+  Optional signed per-chain sequence numbers (position: after `ts_ms` in the
+  canonical order). Both chains are intact and fully signed; the signer's own
+  numbering shows a position missing (`0,1,3`) or assigned twice (`0,1,1`).
+  This is the gap-versus-duplicate distinction that linkage alone cannot
+  express. Verifiers implementing only the -00 signed set will report signature
+  failures on these vectors — that is the specified fail-closed direction, not
+  agreement.
+- `30-head-assertion.json` — **the external state that answers vector 14**
+  (added for -01). A signed head assertion: `chain_id` (SHA-256 of the genesis
+  line), `count`, `head_hash`, `asserted_ts_ms`, signed over the ASCII
+  domain-separation prefix `agent-receipt-head-v1:` plus the compact JSON
+  payload. It matches `01-basic-chain.jsonl` and mismatches
+  `14-head-truncated.jsonl` — head truncation, invisible to the chain, is
+  caught the moment any assertion is anchored outside the log. Run
+  `python3 verify.py --head vectors/30-head-assertion.json vectors/01-basic-chain.jsonl`.
 
 ## Test key
 

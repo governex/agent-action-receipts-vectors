@@ -1,6 +1,6 @@
 {
   "suite": "agent-action-receipts conformance vectors",
-  "draft": "draft-sahu-agent-action-receipts-00",
+  "draft": "draft-sahu-agent-action-receipts-01 (vectors 01-18 are unchanged from the -00 suite; 19-21 and the head assertion exercise -01 additions)",
   "test_seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
   "test_public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
   "vectors": [
@@ -66,9 +66,10 @@
       "file": "13-duplicated-line.jsonl",
       "expect": {
         "sig_failures": [],
-        "chain_break": 3
+        "chain_break": 3,
+        "step_id_repeat": 3
       },
-      "note": "a line replayed twice"
+      "note": "a line replayed twice; the chain breaks AND the repeated step_id is flagged"
     },
     {
       "file": "14-head-truncated.jsonl",
@@ -110,7 +111,48 @@
         "sig_failures": [],
         "chain_break": 2
       },
-      "note": "THE DIFFERENTIATOR: an unsigned extension member is edited — every signature still passes, but the chain (over raw transmitted octets) breaks"
+      "note": "THE DIFFERENTIATOR: an unsigned extension member is edited \u2014 every signature still passes, but the chain (over raw transmitted octets) breaks"
+    },
+    {
+      "file": "19-replayed-step-id.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null,
+        "step_id_repeat": 4
+      },
+      "note": "REPETITION with an intact chain: the recorder re-emitted an already-recorded action as a new, validly signed, validly linked position - only the repeated step_id gives it away; a verifier that checks signatures and linkage but not step_id uniqueness reports clean"
+    },
+    {
+      "file": "20-seq-gap.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null,
+        "seq_gap": 3
+      },
+      "note": "ORDERING (-01 seq profile): signed per-chain sequence numbers 0,1,3 - the chain is intact (nothing was removed from THIS file) but the signer's own numbering shows positions are missing; distinguishes a gap from mere absence, which linkage alone cannot"
+    },
+    {
+      "file": "21-seq-repeat.jsonl",
+      "expect": {
+        "sig_failures": [],
+        "chain_break": null,
+        "seq_repeat": 3
+      },
+      "note": "ORDERING (-01 seq profile): sequence numbers 0,1,1 - the signer assigned the same position twice (a fork made sequential); intact chain, valid signatures, caught only by the signed seq"
+    }
+  ],
+  "head_vectors": [
+    {
+      "file": "30-head-assertion.json",
+      "log": "01-basic-chain.jsonl",
+      "expect": "match",
+      "note": "signed head assertion (chain_id = sha256 of the genesis line, count, head digest) over the intact 3-line chain; signature is domain-separated with the ASCII prefix agent-receipt-head-v1:"
+    },
+    {
+      "file": "30-head-assertion.json",
+      "log": "14-head-truncated.jsonl",
+      "expect": "mismatch",
+      "note": "the SAME assertion against vector 14 (which is 01 truncated at the head): count 2 != 3 and the head digest differs - the external state that catches what vector 14 shows the chain alone cannot"
     }
   ]
 }
